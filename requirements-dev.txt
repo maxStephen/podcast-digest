@@ -1,0 +1,6 @@
+-r requirements.txt
+pytest>=8.0.0
+pytest-cov>=5.0.0
+moto[s3,secretsmanager,ses]>=5.0.0
+responses>=0.25.0
+python-dotenv>=1.0.0
