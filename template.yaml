@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  podcast-digest
+  Daily podcast summarization pipeline — Lambda, EventBridge, S3, SES, API Gateway
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Handler: handler.lambda_handler
+    Timeout: 900
+    MemorySize: 512
+    EphemeralStorage:
+      Size: 1024
+    Environment:
+      Variables:
+        S3_BUCKET: !Ref DigestBucket
+        CONFIG_KEY: config/podcasts.json
+        LOG_KEY: logs/run_log.jsonl
+        MANIFEST_KEY: feedback/manifest.json
+        FEEDBACK_KEY: feedback/feedback_log.jsonl
+        TZ: America/New_York
+
+Parameters:
+  TimeZone:
+    Type: String
+    Default: America/New_York
+    Description: Timezone for the 5:45 AM schedule (IANA format)
+
+  ScheduleExpression:
+    Type: String
+    Default: "cron(45 5 * * ? *)"
+    Description: EventBridge schedule expression (UTC — adjust for your timezone offset)
+
+  SesFromAddress:
+    Type: String
+    Description: Verified SES sender email address
+
+  SesToAddress:
+    Type: String
+    Description: Recipient email address for the morning digest
+
+Resources:
+
+  DigestBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "podcast-digest-${AWS::AccountId}"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldLogs
+            Status: Enabled
+            Prefix: logs/
+            ExpirationInDays: 365
+          - Id: ExpireOldFeedback
+            Status: Enabled
+            Prefix: feedback/
+            ExpirationInDays: 365
+
+  AnthropicApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/anthropic_api_key
+      Description: Anthropic Claude API key
+      SecretString: '{"api_key": "REPLACE_ME"}'
+
+  OpenAiApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/openai_api_key
+      Description: OpenAI Whisper API key
+      SecretString: '{"api_key": "REPLACE_ME"}'
+
+  MsGraphTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/ms_graph
+      Description: Microsoft Graph credentials for OneNote delivery
+      SecretString: '{"tenant_id": "REPLACE_ME", "client_id": "REPLACE_ME", "client_secret": "REPLACE_ME"}'
+
+  PocketCastsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/pocket_casts
+      Description: Pocket Casts account credentials
+      SecretString: '{"email": "REPLACE_ME", "password": "REPLACE_ME"}'
+
+  SesSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/ses
+      Description: SES sender and recipient addresses
+      SecretString: !Sub '{"from_address": "${SesFromAddress}", "to_address": "${SesToAddress}"}'
+
+  DigestFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: podcast-digest-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DigestLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3Access
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::podcast-digest-${AWS::AccountId}/*"
+              - Sid: SecretsAccess
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AnthropicApiKeySecret
+                  - !Ref OpenAiApiKeySecret
+                  - !Ref MsGraphTokenSecret
+                  - !Ref PocketCastsSecret
+                  - !Ref SesSecret
+              - Sid: SesAccess
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+
+  DigestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: podcast-digest-main
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Role: !GetAtt DigestFunctionRole.Arn
+      Description: Daily podcast summarization and delivery job
+
+  DigestSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: podcast-digest-daily
+      Description: Triggers the podcast digest Lambda at 5:45 AM daily
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref TimeZone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DigestFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{}'
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: podcast-digest-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeDigestLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt DigestFunction.Arn
+
+  DigestFunctionSchedulerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DigestFunction
+      Action: lambda:InvokeFunction
+      Principal: scheduler.amazonaws.com
+      SourceArn: !GetAtt DigestSchedule.Arn
+
+  FeedbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: podcast-digest-feedback
+      CodeUri: src/
+      Handler: feedback.lambda_handler
+      Role: !GetAtt FeedbackFunctionRole.Arn
+      Description: Receives feedback from Apple Shortcut via API Gateway
+      Events:
+        FeedbackApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FeedbackApi
+            Method: POST
+            Path: /feedback
+
+  FeedbackFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: podcast-digest-feedback-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FeedbackLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3FeedbackAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::podcast-digest-${AWS::AccountId}/feedback/*"
+
+  FeedbackApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      Description: Private endpoint for Apple Shortcut feedback submissions
+      Auth:
+        DefaultAuthorizer: ApiKeyAuthorizer
+        Authorizers:
+          ApiKeyAuthorizer:
+            FunctionArn: !GetAtt ApiKeyAuthFunction.Arn
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+            Identity:
+              Headers:
+                - x-api-key
+
+  ApiKeyAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: podcast-digest-api-auth
+      CodeUri: src/
+      Handler: feedback.auth_handler
+      Description: Validates x-api-key header for feedback endpoint
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref DigestBucket
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref FeedbackApiKeySecret
+
+  FeedbackApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: podcast/feedback_api_key
+      Description: API key for Apple Shortcut feedback endpoint
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: api_key
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  ApiKeyAuthFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiKeyAuthFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedbackApi}/*"
+
+Outputs:
+  DigestBucketName:
+    Description: S3 bucket for config, logs, and feedback
+    Value: !Ref DigestBucket
+
+  DigestFunctionArn:
+    Description: Main digest Lambda ARN
+    Value: !GetAtt DigestFunction.Arn
+
+  FeedbackApiEndpoint:
+    Description: API Gateway endpoint URL for Apple Shortcut feedback
+    Value: !Sub "https://${FeedbackApi}.execute-api.${AWS::Region}.amazonaws.com/prod/feedback"
+
+  FeedbackApiKeySecretArn:
+    Description: Secrets Manager ARN for the auto-generated feedback API key
+    Value: !Ref FeedbackApiKeySecret
