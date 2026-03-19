@@ -1,0 +1,50 @@
+{
+  "_comment": "Example only. Real config lives in S3 and is never committed.",
+  "podcasts": [
+    {
+      "name": "Example Tech Show",
+      "rss_url": "https://feeds.example.com/tech-show",
+      "priority": 1,
+      "verbosity": 600,
+      "quotability": true,
+      "transcript_source": "show_notes_then_whisper",
+      "max_episode_duration_minutes": 90,
+      "pocket_casts_action": "none",
+      "last_summarized": "never",
+      "error_consecutive_days": 0,
+      "error_cumulative_days_this_year": 0,
+      "last_error_date": null,
+      "last_error_message": null
+    },
+    {
+      "name": "Example History Podcast",
+      "rss_url": "https://feeds.example.com/history-pod",
+      "priority": 2,
+      "verbosity": 1200,
+      "quotability": true,
+      "transcript_source": "whisper",
+      "max_episode_duration_minutes": 240,
+      "pocket_casts_action": "mark_played",
+      "last_summarized": "2026-03-18",
+      "error_consecutive_days": 0,
+      "error_cumulative_days_this_year": 0,
+      "last_error_date": null,
+      "last_error_message": null
+    },
+    {
+      "name": "Example News Daily",
+      "rss_url": "https://feeds.example.com/news-daily",
+      "priority": 3,
+      "verbosity": 300,
+      "quotability": false,
+      "transcript_source": "show_notes",
+      "max_episode_duration_minutes": 30,
+      "pocket_casts_action": "none",
+      "last_summarized": "2026-03-18",
+      "error_consecutive_days": 2,
+      "error_cumulative_days_this_year": 5,
+      "last_error_date": "2026-03-18",
+      "last_error_message": "RSS feed returned HTTP 503"
+    }
+  ]
+}
