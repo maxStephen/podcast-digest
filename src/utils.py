@@ -188,7 +188,7 @@ class RunLogger:
         try:
             existing = self.s3.get_object(Bucket=self.bucket, Key=self.log_key)
             current = existing["Body"].read().decode("utf-8")
-        except self.s3.exceptions.NoSuchKey:
+        except Exception:
             current = ""
 
         updated = current + json.dumps(record) + "\n"
