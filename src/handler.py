@@ -171,7 +171,7 @@ def _process_backcatalogue(episodes: list, podcast: dict, cost_tracker: CostTrac
     Produce a single rolled-up back-catalogue summary.
     Returns a list with one synthetic episode entry for digest rendering.
     """
-    summary = summarize_backcatalogue(episodes, podcast, cost_tracker)
+    summary = summarize_backcatalogue(episodes[:10], podcast, cost_tracker)
 
     return [{
         "title": f"Back catalogue — {len(episodes)} episodes",

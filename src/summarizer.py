@@ -71,7 +71,7 @@ Episode title: {episode['title']}
 Published: {episode['published']}
 
 Transcript/show notes:
-{transcript[:6000]}
+{transcript[:3000]}
 
 Respond in this exact format:
 

@@ -10,7 +10,7 @@ Globals:
     Runtime: python3.12
     Handler: handler.lambda_handler
     Timeout: 900
-    MemorySize: 512
+    MemorySize: 3008   
     EphemeralStorage:
       Size: 1024
     Environment:
@@ -166,7 +166,9 @@ Resources:
         Arn: !GetAtt DigestFunction.Arn
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{}'
-
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+  
   SchedulerRole:
     Type: AWS::IAM::Role
     Properties:
