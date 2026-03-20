@@ -13,7 +13,7 @@ bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 
 MODELS = {
     "haiku":  "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
 }
 DEFAULT_MODEL = "haiku"
 
