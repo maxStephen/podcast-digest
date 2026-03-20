@@ -68,13 +68,6 @@ Resources:
             Prefix: feedback/
             ExpirationInDays: 365
 
-  AnthropicApiKeySecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: podcast/anthropic_api_key
-      Description: Anthropic Claude API key
-      SecretString: '{"api_key": "REPLACE_ME"}'
-
   OpenAiApiKeySecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -133,7 +126,6 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Ref AnthropicApiKeySecret
                   - !Ref OpenAiApiKeySecret
                   - !Ref MsGraphTokenSecret
                   - !Ref PocketCastsSecret
@@ -144,6 +136,13 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                 Resource: "*"
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-haiku-20241022-v1:0
+                  - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5
 
   DigestFunction:
     Type: AWS::Serverless::Function
@@ -276,11 +275,7 @@ Resources:
     Properties:
       Name: podcast/feedback_api_key
       Description: API key for Apple Shortcut feedback endpoint
-      GenerateSecretString:
-        SecretStringTemplate: '{}'
-        GenerateStringKey: api_key
-        PasswordLength: 32
-        ExcludeCharacters: '"@/\'
+      SecretString: '{"api_key": "REPLACE_ME"}'
 
   ApiKeyAuthFunctionPermission:
     Type: AWS::Lambda::Permission

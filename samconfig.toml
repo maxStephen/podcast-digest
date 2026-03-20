@@ -1,0 +1,21 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "podcast-digest"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name         = "podcast-digest"
+s3_prefix          = "podcast-digest"
+region             = "us-east-1"
+confirm_changeset  = true
+capabilities       = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+disable_rollback   = false
+parameter_overrides = [
+  "TimeZone=America/New_York",
+  "SesFromAddress=maxstephen@gmail.com",
+  "SesToAddress=maxstephen@gmail.com"
+]

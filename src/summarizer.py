@@ -1,22 +1,28 @@
 """
 summarizer.py
-Claude API integration — episode summarization with per-podcast parameters.
+Claude via AWS Bedrock — episode summarization with per-podcast parameters.
+Uses Haiku by default, Sonnet for per-podcast override.
 """
 
-import anthropic
-from utils import get_anthropic_key
+import json
+import boto3
 
+bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 
-# ── Episode type labels ────────────────────────────────────────────────────────
+# ── Model IDs ──────────────────────────────────────────────────────────────────
 
-EPISODE_TYPES = ["Interview", "Solo", "Panel", "Debate", "Storytelling", "News"]
+MODELS = {
+    "haiku":  "anthropic.claude-3-5-haiku-20241022-v1:0",
+    "sonnet": "anthropic.claude-sonnet-4-5",
+}
+DEFAULT_MODEL = "haiku"
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def summarize_episode(episode: dict, transcript: str, podcast: dict, cost_tracker) -> dict:
     """
-    Summarize a single episode via the Claude API.
+    Summarize a single episode via Claude on Bedrock.
 
     Returns a dict containing:
         summary, episode_type, tags, quotes (if quotability),
@@ -24,9 +30,10 @@ def summarize_episode(episode: dict, transcript: str, podcast: dict, cost_tracke
     """
     verbosity = podcast.get("verbosity", 600)
     quotability = podcast.get("quotability", False)
+    model_key = podcast.get("model", DEFAULT_MODEL)
 
     prompt = _build_prompt(episode, transcript, verbosity, quotability)
-    response_text, input_tokens, output_tokens = _call_claude(prompt)
+    response_text, input_tokens, output_tokens = _call_bedrock(prompt, model_key)
     cost_tracker.add_claude(input_tokens, output_tokens)
 
     return _parse_response(response_text, quotability, input_tokens, output_tokens)
@@ -35,14 +42,11 @@ def summarize_episode(episode: dict, transcript: str, podcast: dict, cost_tracke
 def summarize_backcatalogue(episodes: list, podcast: dict, cost_tracker) -> dict:
     """
     Produce a single rolled-up summary across all back-catalogue episodes.
-    Used when last_summarized is 'never'.
-
-    Returns a dict containing:
-        summary, notable_episodes, people, urls, input_tokens, output_tokens
+    Always uses Sonnet for deeper synthesis regardless of per-podcast model setting.
     """
     verbosity = podcast.get("verbosity", 600)
     prompt = _build_backcatalogue_prompt(episodes, podcast["name"], verbosity)
-    response_text, input_tokens, output_tokens = _call_claude(prompt)
+    response_text, input_tokens, output_tokens = _call_bedrock(prompt, "sonnet")
     cost_tracker.add_claude(input_tokens, output_tokens)
 
     return _parse_backcatalogue_response(response_text, input_tokens, output_tokens)
@@ -114,23 +118,31 @@ PEOPLE: [comma-separated list of recurring guests or notable people, or NONE]
 URLS: [comma-separated list of key resources or websites associated with the show, or NONE]"""
 
 
-# ── Claude API call ────────────────────────────────────────────────────────────
+# ── Bedrock API call ───────────────────────────────────────────────────────────
 
-def _call_claude(prompt: str) -> tuple:
+def _call_bedrock(prompt: str, model_key: str) -> tuple:
     """
-    Call Claude API and return (response_text, input_tokens, output_tokens).
+    Call Claude on Bedrock and return (response_text, input_tokens, output_tokens).
     """
-    client = anthropic.Anthropic(api_key=get_anthropic_key())
+    model_id = MODELS.get(model_key, MODELS[DEFAULT_MODEL])
 
-    message = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": prompt}],
+    })
+
+    response = bedrock.invoke_model(
+        modelId=model_id,
+        body=body,
+        contentType="application/json",
+        accept="application/json",
     )
 
-    response_text = message.content[0].text
-    input_tokens = message.usage.input_tokens
-    output_tokens = message.usage.output_tokens
+    result = json.loads(response["body"].read())
+    response_text = result["content"][0]["text"]
+    input_tokens = result["usage"]["input_tokens"]
+    output_tokens = result["usage"]["output_tokens"]
 
     return response_text, input_tokens, output_tokens
 
@@ -138,29 +150,26 @@ def _call_claude(prompt: str) -> tuple:
 # ── Response parsers ───────────────────────────────────────────────────────────
 
 def _parse_response(text: str, quotability: bool, input_tokens: int, output_tokens: int) -> dict:
-    """Parse Claude's structured response into a clean dict."""
-    result = {
+    return {
         "episode_type": _extract_field(text, "EPISODE_TYPE"),
-        "tags": _extract_list(text, "TAGS"),
-        "summary": _extract_block(text, "SUMMARY"),
-        "quotes": _extract_quotes(text) if quotability else [],
-        "people": _extract_list(text, "PEOPLE"),
-        "urls": _extract_list(text, "URLS"),
+        "tags":         _extract_list(text, "TAGS"),
+        "summary":      _extract_block(text, "SUMMARY"),
+        "quotes":       _extract_quotes(text) if quotability else [],
+        "people":       _extract_list(text, "PEOPLE"),
+        "urls":         _extract_list(text, "URLS"),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
-    return result
 
 
 def _parse_backcatalogue_response(text: str, input_tokens: int, output_tokens: int) -> dict:
-    """Parse Claude's back-catalogue response into a clean dict."""
     return {
-        "summary": _extract_block(text, "SUMMARY"),
+        "summary":          _extract_block(text, "SUMMARY"),
         "notable_episodes": _extract_notable_episodes(text),
-        "people": _extract_list(text, "PEOPLE"),
-        "urls": _extract_list(text, "URLS"),
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "people":           _extract_list(text, "PEOPLE"),
+        "urls":             _extract_list(text, "URLS"),
+        "input_tokens":     input_tokens,
+        "output_tokens":    output_tokens,
     }
 
 
@@ -198,16 +207,16 @@ def _extract_block(text: str, label: str) -> str:
 
 
 def _extract_quotes(text: str) -> list:
-    quotes = []
-    for line in text.splitlines():
-        if line.startswith("QUOTE:"):
-            quotes.append(line[6:].strip())
-    return quotes
+    return [
+        line[6:].strip()
+        for line in text.splitlines()
+        if line.startswith("QUOTE:")
+    ]
 
 
 def _extract_notable_episodes(text: str) -> list:
-    episodes = []
-    for line in text.splitlines():
-        if line.startswith("EPISODE:"):
-            episodes.append(line[8:].strip())
-    return episodes
+    return [
+        line[8:].strip()
+        for line in text.splitlines()
+        if line.startswith("EPISODE:")
+    ]
