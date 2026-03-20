@@ -56,12 +56,13 @@ def apply_action(episode: dict, podcast: dict) -> None:
     else:
         raise ValueError(f"Unknown pocket_casts_action: {action}")
 
-
 # ── Authentication ─────────────────────────────────────────────────────────────
 
 def _get_token() -> str:
     """Authenticate with Pocket Casts and return a session token."""
     creds = get_pocket_casts_credentials()
+    if creds.get("email") == "REPLACE_ME":
+        raise ValueError("Pocket Casts credentials not configured")
     response = requests.post(LOGIN_URL, json={
         "email": creds["email"],
         "password": creds["password"],
@@ -69,7 +70,6 @@ def _get_token() -> str:
     })
     response.raise_for_status()
     return response.json()["token"]
-
 
 # ── UUID resolution ────────────────────────────────────────────────────────────
 

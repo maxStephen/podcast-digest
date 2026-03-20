@@ -19,7 +19,12 @@ TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
 def deliver(digest: dict, cost_tracker) -> None:
     """
-    Build the digest HTML page and POST it to OneNote.
+    def deliver(digest: dict, cost_tracker) -> None:
+    creds = get_ms_graph_credentials()
+    if creds.get("tenant_id") == "REPLACE_ME":
+        print("OneNote delivery skipped — MS Graph credentials not yet configured")
+        return
+        Build the digest HTML page and POST it to OneNote.
 
     digest structure:
         {
