@@ -10,10 +10,13 @@ import boto3
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 
 # ── Model IDs ──────────────────────────────────────────────────────────────────
-
+#MODELS = {
+ #   "haiku":  "anthropic.claude-3-5-haiku-20241022-v1:0",
+ #   "sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+#}
 MODELS = {
-    "haiku":  "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "haiku":  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "sonnet": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 }
 DEFAULT_MODEL = "haiku"
 
