@@ -1,13 +1,14 @@
 """
 delivery_ses.py
 Builds and sends the condensed morning digest email via AWS SES.
-One show section per email — episode title + first 2 sentences + Overcast link.
+Includes a Notable Moments section at the top across all shows.
 """
 
 import boto3
 import re
 from datetime import date
 from utils import get_ses_addresses
+from transcriber import source_label
 
 ses = boto3.client("ses")
 
@@ -17,11 +18,11 @@ ses = boto3.client("ses")
 def deliver(digest: dict, cost_tracker) -> None:
     """
     Build a condensed HTML email and send via SES.
-    Email mirrors the OneNote layout but contains only:
-        - Show name + cover art
-        - Episode title + first 2 sentences of summary
-        - Overcast deep link per episode
-        - Errors section if any shows failed
+    Structure:
+        1. Header (date, cost)
+        2. Notable Moments across all shows (if any)
+        3. Per-show sections (title + first 2 sentences + Overcast link)
+        4. Errors section (if any)
     """
     addresses = get_ses_addresses()
     from_address = addresses["from_address"]
@@ -35,7 +36,7 @@ def deliver(digest: dict, cost_tracker) -> None:
         Destination={"ToAddresses": [to_address]},
         Message={
             "Subject": {"Data": subject, "Charset": "UTF-8"},
-            "Body": {"Html": {"Data": html, "Charset": "UTF-8"}},
+            "Body":    {"Html": {"Data": html, "Charset": "UTF-8"}},
         },
     )
 
@@ -49,9 +50,11 @@ def _build_subject(digest: dict) -> str:
         if not s.get("error") and not s.get("no_new_episodes")
     )
     show_count = len([s for s in digest["shows"] if not s.get("error")])
+    notable_count = len(digest.get("notable_moments", []))
+    notable_str = f" · {notable_count} notable moment(s)" if notable_count else ""
     return (
         f"Podcast Digest — {digest['date']} "
-        f"· {total_episodes} episode(s) across {show_count} show(s)"
+        f"· {total_episodes} episode(s) across {show_count} show(s){notable_str}"
     )
 
 
@@ -61,9 +64,11 @@ def _build_email_html(digest: dict, cost_tracker) -> str:
     today = digest["date"]
     shows = digest["shows"]
     cost_line = cost_tracker.format_for_digest()
+    notable_moments = digest.get("notable_moments", [])
     errors = [s for s in shows if s.get("error")]
     active_shows = [s for s in shows if not s.get("error")]
 
+    notable_section = _build_notable_moments_section(notable_moments)
     sections = "".join(_build_show_section(show) for show in active_shows)
     error_section = _build_error_section(errors) if errors else ""
 
@@ -82,6 +87,7 @@ def _build_email_html(digest: dict, cost_tracker) -> str:
   </p>
   <hr style="border:none;border-top:1px solid #e5e5e5;margin:16px 0;"/>
 
+  {notable_section}
   {sections}
   {error_section}
 
@@ -93,11 +99,70 @@ def _build_email_html(digest: dict, cost_tracker) -> str:
 </html>"""
 
 
+# ── Notable Moments section ────────────────────────────────────────────────────
+
+def _build_notable_moments_section(moments: list) -> str:
+    if not moments:
+        return ""
+
+    moment_blocks = "".join(_build_moment_block(m) for m in moments)
+
+    return f"""
+<div style="margin-bottom:24px;">
+  <h2 style="font-size:17px;margin-bottom:4px;color:#1a1a1a;">
+    &#9733; Notable Moments
+  </h2>
+  <p style="color:#888;font-size:12px;margin-top:0;margin-bottom:12px;">
+    AI-identified moments worth your attention across today's episodes
+  </p>
+  {moment_blocks}
+</div>
+<hr style="border:none;border-top:2px solid #e5e5e5;margin:16px 0;"/>"""
+
+
+def _build_moment_block(moment: dict) -> str:
+    quote   = moment.get("quote", "")
+    mtype   = moment.get("type", "")
+    speaker = moment.get("speaker", "")
+    show    = moment.get("show", "")
+    episode = moment.get("episode", "")
+
+    type_colors = {
+        "Surprising claim or statistic":    ("#fff3cd", "#856404"),
+        "Strong disagreement or debate moment": ("#fde8e8", "#9b1c1c"),
+        "Memorable analogy or metaphor":    ("#e8f4fd", "#1e40af"),
+        "Unusual personal admission":       ("#f0fdf4", "#166534"),
+        "Counterintuitive insight":         ("#f3e8ff", "#6b21a8"),
+    }
+    bg, fg = type_colors.get(mtype, ("#f5f5f5", "#333333"))
+
+    speaker_html = f" — <em>{speaker}</em>" if speaker and speaker.lower() != "host" else ""
+
+    return f"""
+<div style="margin-bottom:12px;padding:10px 14px;
+            background:{bg};border-radius:6px;">
+  <div style="margin-bottom:6px;">
+    <span style="background:{fg};color:#fff;font-size:11px;
+                 padding:2px 7px;border-radius:4px;font-weight:500;">
+      {mtype}
+    </span>
+  </div>
+  <p style="margin:0 0 4px 0;font-size:13px;line-height:1.5;font-style:italic;">
+    &ldquo;{quote}&rdquo;{speaker_html}
+  </p>
+  <p style="margin:0;font-size:11px;color:#888;">
+    {show} &nbsp;·&nbsp; {episode}
+  </p>
+</div>"""
+
+
+# ── Show section ───────────────────────────────────────────────────────────────
+
 def _build_show_section(show: dict) -> str:
-    name = show["name"]
-    cover_art = show.get("cover_art")
-    episodes = show.get("episodes", [])
-    no_new = show.get("no_new_episodes", False)
+    name           = show["name"]
+    cover_art      = show.get("cover_art")
+    episodes       = show.get("episodes", [])
+    no_new         = show.get("no_new_episodes", False)
     last_summarized = show.get("last_summarized", "")
 
     cover_html = ""
@@ -130,10 +195,10 @@ def _build_show_section(show: dict) -> str:
 
 
 def _build_episode_block(ep: dict) -> str:
-    title = ep.get("title", "Untitled")
-    duration = ep.get("duration_display", "")
-    summary_text = ep.get("summary", {}).get("summary", "")
-    overcast_url = ep.get("overcast_url")
+    title           = ep.get("title", "Untitled")
+    duration        = ep.get("duration_display", "")
+    summary_text    = ep.get("summary", {}).get("summary", "")
+    overcast_url    = ep.get("overcast_url")
     is_backcatalogue = ep.get("is_backcatalogue", False)
 
     condensed = _first_two_sentences(summary_text)
@@ -159,8 +224,7 @@ def _build_episode_block(ep: dict) -> str:
         )
 
     return f"""
-<div style="margin-bottom:14px;padding-left:8px;
-            border-left:3px solid #e5e5e5;">
+<div style="margin-bottom:14px;padding-left:8px;border-left:3px solid #e5e5e5;">
   <p style="margin:0 0 4px 0;font-weight:500;font-size:14px;">
     {title}{duration_html}{backcatalogue_badge}
   </p>
@@ -171,6 +235,8 @@ def _build_episode_block(ep: dict) -> str:
 </div>"""
 
 
+# ── Error section ──────────────────────────────────────────────────────────────
+
 def _build_error_section(errors: list) -> str:
     if not errors:
         return ""
@@ -178,9 +244,9 @@ def _build_error_section(errors: list) -> str:
     rows = "".join(
         f"""<tr>
           <td style="padding:5px 10px;"><strong>{s['name']}</strong></td>
-          <td style="padding:5px 10px;color:#b91c1c;">{s.get('error', 'Unknown error')}</td>
-          <td style="padding:5px 10px;">{s.get('error_consecutive_days', 0)}d in a row</td>
-          <td style="padding:5px 10px;">{s.get('error_cumulative_days_this_year', 0)}d this year</td>
+          <td style="padding:5px 10px;color:#b91c1c;">{s.get('error','Unknown error')}</td>
+          <td style="padding:5px 10px;">{s.get('error_consecutive_days',0)}d in a row</td>
+          <td style="padding:5px 10px;">{s.get('error_cumulative_days_this_year',0)}d this year</td>
         </tr>"""
         for s in errors
     )

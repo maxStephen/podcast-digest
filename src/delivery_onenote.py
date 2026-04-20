@@ -1,6 +1,7 @@
 """
 delivery_onenote.py
 Builds and posts the morning digest page to OneNote via Microsoft Graph API.
+Includes a Notable Moments section at the top across all shows.
 """
 
 import requests
@@ -12,39 +13,23 @@ from transcriber import source_label
 # ── Graph API constants ────────────────────────────────────────────────────────
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+TOKEN_URL  = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def deliver(digest: dict, cost_tracker) -> None:
     """
-    def deliver(digest: dict, cost_tracker) -> None:
+    Build the digest HTML page and POST it to OneNote.
+    Skipped if MS Graph credentials are not yet configured.
+    """
     creds = get_ms_graph_credentials()
     if creds.get("tenant_id") == "REPLACE_ME":
         print("OneNote delivery skipped — MS Graph credentials not yet configured")
         return
-        Build the digest HTML page and POST it to OneNote.
 
-    digest structure:
-        {
-            "date": "Thursday, March 19 2026",
-            "shows": [
-                {
-                    "name": str,
-                    "cover_art": str | None,
-                    "episodes": [ { episode + summary dicts } ],
-                    "no_new_episodes": bool,
-                    "last_summarized": str,
-                    "error": str | None,
-                    "error_consecutive_days": int,
-                    "error_cumulative_days_this_year": int,
-                }
-            ]
-        }
-    """
     token = _get_access_token()
-    html = _build_page_html(digest, cost_tracker)
+    html  = _build_page_html(digest, cost_tracker)
     _post_page(token, html, digest["date"])
 
 
@@ -53,7 +38,7 @@ def deliver(digest: dict, cost_tracker) -> None:
 def _get_access_token() -> str:
     """Obtain a Microsoft Graph access token via client credentials flow."""
     creds = get_ms_graph_credentials()
-    url = TOKEN_URL.format(tenant_id=creds["tenant_id"])
+    url   = TOKEN_URL.format(tenant_id=creds["tenant_id"])
 
     response = requests.post(url, data={
         "grant_type":    "client_credentials",
@@ -68,23 +53,22 @@ def _get_access_token() -> str:
 # ── Page construction ──────────────────────────────────────────────────────────
 
 def _build_page_html(digest: dict, cost_tracker) -> str:
-    today = digest["date"]
-    shows = digest["shows"]
+    today           = digest["date"]
+    shows           = digest["shows"]
+    notable_moments = digest.get("notable_moments", [])
 
     total_episodes = sum(
-        len(s["episodes"]) for s in shows if not s.get("error") and not s.get("no_new_episodes")
+        len(s["episodes"]) for s in shows
+        if not s.get("error") and not s.get("no_new_episodes")
     )
     total_shows = len(shows)
-    cost_line = cost_tracker.format_for_digest()
-
-    errors = [s for s in shows if s.get("error")]
+    cost_line   = cost_tracker.format_for_digest()
+    errors      = [s for s in shows if s.get("error")]
     active_shows = [s for s in shows if not s.get("error")]
 
-    sections = []
-    for show in active_shows:
-        sections.append(_build_show_section(show))
-
-    error_section = _build_error_section(errors) if errors else ""
+    notable_section = _build_notable_moments_section(notable_moments)
+    sections        = "".join(_build_show_section(s) for s in active_shows)
+    error_section   = _build_error_section(errors) if errors else ""
 
     return f"""<!DOCTYPE html>
 <html>
@@ -101,6 +85,7 @@ def _build_page_html(digest: dict, cost_tracker) -> str:
 </p>
 <hr/>
 
+{notable_section}
 {"".join(sections)}
 {error_section}
 
@@ -108,16 +93,71 @@ def _build_page_html(digest: dict, cost_tracker) -> str:
 </html>"""
 
 
+# ── Notable Moments section ────────────────────────────────────────────────────
+
+def _build_notable_moments_section(moments: list) -> str:
+    if not moments:
+        return ""
+
+    moment_blocks = "".join(_build_moment_block(m) for m in moments)
+
+    return f"""
+<h2>&#9733; Notable Moments</h2>
+<p style="color:#888;font-size:13px;margin-top:0;">
+  AI-identified moments worth your attention across today's episodes
+</p>
+{moment_blocks}
+<hr/>"""
+
+
+def _build_moment_block(moment: dict) -> str:
+    quote   = moment.get("quote", "")
+    mtype   = moment.get("type", "")
+    speaker = moment.get("speaker", "")
+    show    = moment.get("show", "")
+    episode = moment.get("episode", "")
+
+    type_colors = {
+        "Surprising claim or statistic":        "#856404",
+        "Strong disagreement or debate moment": "#9b1c1c",
+        "Memorable analogy or metaphor":        "#1e40af",
+        "Unusual personal admission":           "#166534",
+        "Counterintuitive insight":             "#6b21a8",
+    }
+    color = type_colors.get(mtype, "#333333")
+
+    speaker_html = f" — <em>{speaker}</em>" if speaker and speaker.lower() != "host" else ""
+
+    return f"""
+<div style="margin-bottom:12px;padding:10px 14px;border-left:4px solid {color};
+            background:#f9f9f9;">
+  <p style="margin:0 0 4px 0;">
+    <strong style="color:{color};font-size:12px;">{mtype}</strong>
+  </p>
+  <p style="margin:0 0 4px 0;font-style:italic;">
+    &ldquo;{quote}&rdquo;{speaker_html}
+  </p>
+  <p style="margin:0;font-size:12px;color:#888;">
+    {show} &nbsp;·&nbsp; {episode}
+  </p>
+</div>"""
+
+
+# ── Show section ───────────────────────────────────────────────────────────────
+
 def _build_show_section(show: dict) -> str:
-    name = show["name"]
-    cover_art = show.get("cover_art")
-    episodes = show.get("episodes", [])
-    no_new = show.get("no_new_episodes", False)
+    name            = show["name"]
+    cover_art       = show.get("cover_art")
+    episodes        = show.get("episodes", [])
+    no_new          = show.get("no_new_episodes", False)
     last_summarized = show.get("last_summarized", "")
 
     cover_html = ""
     if cover_art:
-        cover_html = f'<img src="{cover_art}" width="80" height="80" style="float:left;margin:0 12px 8px 0;border-radius:8px;"/>'
+        cover_html = (
+            f'<img src="{cover_art}" width="80" height="80" '
+            f'style="float:left;margin:0 12px 8px 0;border-radius:8px;"/>'
+        )
 
     if no_new:
         return f"""
@@ -136,17 +176,17 @@ def _build_show_section(show: dict) -> str:
 
 
 def _build_episode_block(ep: dict) -> str:
-    title = ep["title"]
-    published = ep.get("published", "")
-    duration = ep.get("duration_display", "")
-    episode_type = ep.get("summary", {}).get("episode_type", "")
-    tags = ep.get("summary", {}).get("tags", [])
-    summary = ep.get("summary", {}).get("summary", "")
-    quotes = ep.get("summary", {}).get("quotes", [])
-    people = ep.get("summary", {}).get("people", [])
-    urls = ep.get("summary", {}).get("urls", [])
-    transcript_src = ep.get("transcript_source", "")
-    overcast_url = ep.get("overcast_url")
+    title           = ep["title"]
+    published       = ep.get("published", "")
+    duration        = ep.get("duration_display", "")
+    episode_type    = ep.get("summary", {}).get("episode_type", "")
+    tags            = ep.get("summary", {}).get("tags", [])
+    summary         = ep.get("summary", {}).get("summary", "")
+    quotes          = ep.get("summary", {}).get("quotes", [])
+    people          = ep.get("summary", {}).get("people", [])
+    urls            = ep.get("summary", {}).get("urls", [])
+    transcript_src  = ep.get("transcript_source", "")
+    overcast_url    = ep.get("overcast_url")
     is_backcatalogue = ep.get("is_backcatalogue", False)
 
     tag_html = ""
@@ -159,14 +199,10 @@ def _build_episode_block(ep: dict) -> str:
         tag_html = f'<p style="margin:4px 0;">{tag_pills}</p>'
 
     meta_parts = []
-    if published:
-        meta_parts.append(published)
-    if duration:
-        meta_parts.append(f"[{duration}]")
-    if episode_type:
-        meta_parts.append(episode_type)
-    if transcript_src:
-        meta_parts.append(source_label(transcript_src))
+    if published:     meta_parts.append(published)
+    if duration:      meta_parts.append(f"[{duration}]")
+    if episode_type:  meta_parts.append(episode_type)
+    if transcript_src: meta_parts.append(source_label(transcript_src))
     meta_line = " &nbsp;·&nbsp; ".join(meta_parts)
 
     quotes_html = ""
@@ -180,9 +216,7 @@ def _build_episode_block(ep: dict) -> str:
 
     urls_html = ""
     if urls:
-        url_items = "".join(
-            f'<li><a href="{u}">{u}</a></li>' for u in urls
-        )
+        url_items = "".join(f'<li><a href="{u}">{u}</a></li>' for u in urls)
         urls_html = f"<p><strong>Resources</strong></p><ul>{url_items}</ul>"
 
     backcatalogue_badge = ""
@@ -195,7 +229,8 @@ def _build_episode_block(ep: dict) -> str:
     overcast_html = ""
     if overcast_url:
         overcast_html = (
-            f'<p><a href="{overcast_url}" style="font-size:13px;">&#9654; Open in Overcast</a></p>'
+            f'<p><a href="{overcast_url}" style="font-size:13px;">'
+            f'&#9654; Open in Overcast</a></p>'
         )
 
     return f"""
@@ -210,6 +245,8 @@ def _build_episode_block(ep: dict) -> str:
 <br/>"""
 
 
+# ── Error section ──────────────────────────────────────────────────────────────
+
 def _build_error_section(errors: list) -> str:
     if not errors:
         return ""
@@ -217,7 +254,7 @@ def _build_error_section(errors: list) -> str:
     rows = ""
     for show in errors:
         consecutive = show.get("error_consecutive_days", 0)
-        cumulative = show.get("error_cumulative_days_this_year", 0)
+        cumulative  = show.get("error_cumulative_days_this_year", 0)
         rows += f"""
 <tr>
   <td style="padding:6px 12px;"><strong>{show['name']}</strong></td>
@@ -244,9 +281,9 @@ def _build_error_section(errors: list) -> str:
 
 def _post_page(token: str, html: str, title: str) -> None:
     """POST the digest page to the configured OneNote section."""
-    creds = get_ms_graph_credentials()
+    creds      = get_ms_graph_credentials()
     notebook_id = creds.get("notebook_id", "")
-    section_id = creds.get("section_id", "")
+    section_id  = creds.get("section_id", "")
 
     url = (
         f"{GRAPH_BASE}/me/onenote/notebooks/{notebook_id}"
@@ -255,7 +292,7 @@ def _post_page(token: str, html: str, title: str) -> None:
 
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/xhtml+xml",
+        "Content-Type":  "application/xhtml+xml",
     }
 
     response = requests.post(url, headers=headers, data=html.encode("utf-8"))

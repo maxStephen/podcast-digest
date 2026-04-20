@@ -10,15 +10,23 @@ import boto3
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 
 # ── Model IDs ──────────────────────────────────────────────────────────────────
-#MODELS = {
- #   "haiku":  "anthropic.claude-3-5-haiku-20241022-v1:0",
- #   "sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-#}
+
 MODELS = {
     "haiku":  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "sonnet": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 }
 DEFAULT_MODEL = "haiku"
+
+# ── Notable moment types ───────────────────────────────────────────────────────
+
+MOMENT_TYPES = [
+    "Surprising claim or statistic",
+    "Strong disagreement or debate moment",
+    "Memorable analogy or metaphor",
+    "Unusual personal admission",
+    "Counterintuitive insight",
+]
+
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
@@ -28,7 +36,8 @@ def summarize_episode(episode: dict, transcript: str, podcast: dict, cost_tracke
 
     Returns a dict containing:
         summary, episode_type, tags, quotes (if quotability),
-        people, urls, input_tokens, output_tokens
+        notable_moments (if quotability), people, urls,
+        input_tokens, output_tokens
     """
     verbosity = podcast.get("verbosity", 600)
     quotability = podcast.get("quotability", False)
@@ -58,12 +67,26 @@ def summarize_backcatalogue(episodes: list, podcast: dict, cost_tracker) -> dict
 
 def _build_prompt(episode: dict, transcript: str, verbosity: int, quotability: bool) -> str:
     quote_instruction = ""
+    notable_instruction = ""
+
     if quotability:
         quote_instruction = """
 QUOTES:
 Extract 2-3 short quotes that capture the unique voice or most memorable moments.
 Format each as:
 QUOTE: [quote text] — [speaker name or 'Host' if unknown]
+"""
+        moment_types = "\n".join(f"- {t}" for t in MOMENT_TYPES)
+        notable_instruction = f"""
+NOTABLE_MOMENTS:
+Identify up to 5 moments that are genuinely worth a listener's attention.
+For each moment, classify it as one of these types:
+{moment_types}
+
+Format each as:
+MOMENT: [exact quote or close paraphrase] | TYPE: [moment type] | SPEAKER: [speaker name or 'Host' if unknown]
+
+Only include moments that are truly striking — omit this section entirely if nothing qualifies.
 """
 
     return f"""You are summarizing a podcast episode for a busy listener's morning briefing.
@@ -84,7 +107,7 @@ TAGS: [2-4 short topic tags separated by commas, e.g. history, technology, scien
 SUMMARY:
 [A clear engaging summary in under {verbosity} characters. Focus on what is new,
 interesting, or actionable. Write for a reader who wants the key ideas fast.]
-{quote_instruction}
+{quote_instruction}{notable_instruction}
 PEOPLE: [comma-separated list of notable people or guests mentioned, or NONE]
 
 URLS: [comma-separated list of URLs or resources mentioned, or NONE]"""
@@ -93,7 +116,7 @@ URLS: [comma-separated list of URLs or resources mentioned, or NONE]"""
 def _build_backcatalogue_prompt(episodes: list, show_name: str, verbosity: int) -> str:
     episode_list = "\n".join(
         f"- {ep['title']} ({ep['published']})"
-        for ep in episodes[:50]
+        for ep in episodes[:10]
     )
 
     return f"""You are summarizing the back catalogue of a podcast for a new listener.
@@ -153,14 +176,15 @@ def _call_bedrock(prompt: str, model_key: str) -> tuple:
 
 def _parse_response(text: str, quotability: bool, input_tokens: int, output_tokens: int) -> dict:
     return {
-        "episode_type": _extract_field(text, "EPISODE_TYPE"),
-        "tags":         _extract_list(text, "TAGS"),
-        "summary":      _extract_block(text, "SUMMARY"),
-        "quotes":       _extract_quotes(text) if quotability else [],
-        "people":       _extract_list(text, "PEOPLE"),
-        "urls":         _extract_list(text, "URLS"),
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "episode_type":     _extract_field(text, "EPISODE_TYPE"),
+        "tags":             _extract_list(text, "TAGS"),
+        "summary":          _extract_block(text, "SUMMARY"),
+        "quotes":           _extract_quotes(text) if quotability else [],
+        "notable_moments":  _extract_notable_moments(text) if quotability else [],
+        "people":           _extract_list(text, "PEOPLE"),
+        "urls":             _extract_list(text, "URLS"),
+        "input_tokens":     input_tokens,
+        "output_tokens":    output_tokens,
     }
 
 
@@ -202,7 +226,7 @@ def _extract_block(text: str, label: str) -> str:
         if capturing:
             if any(line.startswith(f"{l}:") for l in
                    ["EPISODE_TYPE", "TAGS", "SUMMARY", "QUOTES",
-                    "PEOPLE", "URLS", "NOTABLE_EPISODES"]):
+                    "NOTABLE_MOMENTS", "PEOPLE", "URLS", "NOTABLE_EPISODES"]):
                 break
             block.append(line)
     return "\n".join(block).strip()
@@ -214,6 +238,29 @@ def _extract_quotes(text: str) -> list:
         for line in text.splitlines()
         if line.startswith("QUOTE:")
     ]
+
+
+def _extract_notable_moments(text: str) -> list:
+    """
+    Parse MOMENT lines into structured dicts.
+    Format: MOMENT: [quote] | TYPE: [type] | SPEAKER: [speaker]
+    """
+    moments = []
+    for line in text.splitlines():
+        if not line.startswith("MOMENT:"):
+            continue
+        parts = line[7:].split("|")
+        if len(parts) < 3:
+            continue
+        quote = parts[0].strip()
+        moment_type = parts[1].replace("TYPE:", "").strip()
+        speaker = parts[2].replace("SPEAKER:", "").strip()
+        moments.append({
+            "quote":   quote,
+            "type":    moment_type,
+            "speaker": speaker,
+        })
+    return moments[:5]
 
 
 def _extract_notable_episodes(text: str) -> list:

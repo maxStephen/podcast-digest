@@ -8,11 +8,12 @@ Flow:
         a. Fetch new episodes from RSS
         b. For each episode: get transcript, summarize, apply Pocket Casts action
         c. On error: log, skip show, update error state in config
-    3. Build digest structure
-    4. Write manifest to S3 (for Apple Shortcut feedback menus)
-    5. Deliver to OneNote and SES in parallel
-    6. Update config state (last_summarized, error counts) in S3
-    7. Flush run log
+    3. Collect notable moments across all shows
+    4. Build digest structure
+    5. Write manifest to S3 (for Apple Shortcut feedback menus)
+    6. Deliver to OneNote and SES in parallel
+    7. Update config state (last_summarized, error counts) in S3
+    8. Flush run log
 """
 
 import os
@@ -51,19 +52,32 @@ def lambda_handler(event: dict, context) -> dict:
     podcasts = cfg.get_podcasts(config)
     digest_shows = []
     episodes_by_show = {}
+    all_notable_moments = []
 
     for podcast in podcasts:
         show_result = _process_show(podcast, cost_tracker, run_logger)
         digest_shows.append(show_result)
+
         if show_result.get("episodes"):
             episodes_by_show[podcast["name"]] = [
                 {"title": ep["title"], "published": ep["published"]}
                 for ep in show_result["episodes"]
             ]
 
+            # Collect notable moments across all shows
+            for ep in show_result["episodes"]:
+                moments = ep.get("summary", {}).get("notable_moments", [])
+                for moment in moments:
+                    all_notable_moments.append({
+                        "show":    podcast["name"],
+                        "episode": ep["title"],
+                        **moment,
+                    })
+
     digest = {
-        "date": _format_date(date.today()),
-        "shows": digest_shows,
+        "date":            _format_date(date.today()),
+        "shows":           digest_shows,
+        "notable_moments": all_notable_moments,
     }
 
     cfg.write_manifest(config, episodes_by_show)
@@ -99,12 +113,12 @@ def _process_show(podcast: dict, cost_tracker: CostTracker, run_logger: RunLogge
         if not episodes:
             run_logger.log_skipped(name)
             return {
-                "name": name,
-                "cover_art": cover_art,
-                "episodes": [],
-                "no_new_episodes": True,
-                "last_summarized": podcast.get("last_summarized", "never"),
-                "error": None,
+                "name":             name,
+                "cover_art":        cover_art,
+                "episodes":         [],
+                "no_new_episodes":  True,
+                "last_summarized":  podcast.get("last_summarized", "never"),
+                "error":            None,
             }
 
         is_backcatalogue = podcast.get("last_summarized") == "never"
@@ -117,12 +131,12 @@ def _process_show(podcast: dict, cost_tracker: CostTracker, run_logger: RunLogge
         run_logger.log_processed(name, len(processed))
 
         return {
-            "name": name,
-            "cover_art": cover_art,
-            "episodes": processed,
-            "no_new_episodes": False,
-            "last_summarized": podcast.get("last_summarized", "never"),
-            "error": None,
+            "name":             name,
+            "cover_art":        cover_art,
+            "episodes":         processed,
+            "no_new_episodes":  False,
+            "last_summarized":  podcast.get("last_summarized", "never"),
+            "error":            None,
         }
 
     except Exception as e:
@@ -131,13 +145,13 @@ def _process_show(podcast: dict, cost_tracker: CostTracker, run_logger: RunLogge
         run_logger.log_error(name, error_msg)
 
         return {
-            "name": name,
-            "cover_art": cover_art,
-            "episodes": [],
-            "no_new_episodes": False,
-            "last_summarized": podcast.get("last_summarized", "never"),
-            "error": error_msg,
-            "error_consecutive_days": podcast.get("error_consecutive_days", 0),
+            "name":                          name,
+            "cover_art":                     cover_art,
+            "episodes":                      [],
+            "no_new_episodes":               False,
+            "last_summarized":               podcast.get("last_summarized", "never"),
+            "error":                         error_msg,
+            "error_consecutive_days":        podcast.get("error_consecutive_days", 0),
             "error_cumulative_days_this_year": podcast.get("error_cumulative_days_this_year", 0),
         }
 
@@ -158,8 +172,8 @@ def _process_episodes(episodes: list, podcast: dict, cost_tracker: CostTracker) 
 
         processed.append({
             **episode,
-            "summary": summary,
-            "transcript_source": source_used,
+            "summary":                summary,
+            "transcript_source":      source_used,
             "transcript_source_label": source_label(source_used),
         })
 
@@ -170,18 +184,19 @@ def _process_backcatalogue(episodes: list, podcast: dict, cost_tracker: CostTrac
     """
     Produce a single rolled-up back-catalogue summary.
     Returns a list with one synthetic episode entry for digest rendering.
+    Notable moments are not extracted for back-catalogue digests.
     """
     summary = summarize_backcatalogue(episodes[:10], podcast, cost_tracker)
 
     return [{
-        "title": f"Back catalogue — {len(episodes)} episodes",
-        "published": f"Through {episodes[-1]['published'] if episodes else 'unknown'}",
-        "published_date": episodes[-1]["published_date"] if episodes else None,
-        "duration_display": None,
-        "overcast_url": None,
-        "is_backcatalogue": True,
-        "summary": summary,
-        "transcript_source": "show_notes_then_whisper",
+        "title":                  f"Back catalogue — {len(episodes)} episodes",
+        "published":              f"Through {episodes[-1]['published'] if episodes else 'unknown'}",
+        "published_date":         episodes[-1]["published_date"] if episodes else None,
+        "duration_display":       None,
+        "overcast_url":           None,
+        "is_backcatalogue":       True,
+        "summary":                summary,
+        "transcript_source":      "show_notes_then_whisper",
         "transcript_source_label": "Back catalogue digest",
     }]
 
@@ -195,7 +210,7 @@ def _deliver(digest: dict, cost_tracker: CostTracker) -> None:
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {
             executor.submit(deliver_onenote, digest, cost_tracker): "OneNote",
-            executor.submit(deliver_ses, digest, cost_tracker): "SES",
+            executor.submit(deliver_ses,     digest, cost_tracker): "SES",
         }
         for future in as_completed(futures):
             name = futures[future]
